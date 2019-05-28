@@ -19,6 +19,6 @@ The `language` must follow the [mkv format for languages](https://www.matroska.o
 All arguments are optional and can be placed anywhere in the line.
 The program accepts file and / or folder name and will search for all mkv files in the folder(s) passed.
 
-Exemples:
-`mkvtracksswapper -a eng file.mkv` put english audio track first in `file.mkv`, creating a new file `file_swapped.mkv` in the same folder
-`mkvtracksswapper -f -a eng -s fre folderWithMkvFiles` put english audio track and french subtitles first in all mkv files in folder, overwritting them
+Examples:  
+`mkvtracksswapper -a eng file.mkv` put english audio track first in `file.mkv`, creating a new file `file_swapped.mkv` in the same folder  
+`mkvtracksswapper -f -a eng -s fre folderWithMkvFiles` put english audio track and french subtitles first in all mkv files in folder, overwriting them
