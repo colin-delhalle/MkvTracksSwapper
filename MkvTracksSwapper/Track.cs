@@ -9,15 +9,9 @@
 
     public class Track
     {
-        public Track()
-        {
-            Language = string.Empty;
-            UID = string.Empty;
-        }
-
         public int TrackNumber { get; set; }
-        public string UID { get; set; }
-        public string Language { get; set; }
+        public string UID { get; set; } = string.Empty;
+        public string Language { get; set; } = "eng";
         public TrackType Type { get; set; }
 
         public bool Equals(Track other)

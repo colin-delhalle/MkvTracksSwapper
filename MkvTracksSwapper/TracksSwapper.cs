@@ -30,43 +30,41 @@ namespace MkvTracksSwapper
 
             try
             {
-                using (Process mkvInfoProcess = Process.Start(processStartInfo))
+                using Process mkvInfoProcess = Process.Start(processStartInfo);
+                mkvInfoProcess.WaitForExit();
+
+                if (mkvInfoProcess.ExitCode != 0)
                 {
-                    mkvInfoProcess.WaitForExit();
+                    _logger.LogError(mkvInfoProcess.StandardOutput.ReadToEnd());
+                    _tracksLoaded = false;
 
-                    if (mkvInfoProcess.ExitCode != 0)
-                    {
-                        _logger.LogError(mkvInfoProcess.StandardOutput.ReadToEnd());
-                        _tracksLoaded = false;
-
-                        return;
-                    }
-
-                    var line = String.Empty;
-                    Track currentTrack = null;
-                    // TODO: remove string parsing and do it with a deserializer
-                    while ((line = mkvInfoProcess.StandardOutput.ReadLine()) != null)
-                    {
-                        if (line == "| + Track")
-                        {
-                            if (currentTrack != null)
-                                _tracksList.Add(currentTrack);
-
-                            currentTrack = new Track();
-                        }
-                        else if (line.StartsWith("|  + Track number:"))
-                            currentTrack.TrackNumber = Int32.Parse(GetPropertyValue(line));
-                        else if (line.StartsWith("|  + Track UID:"))
-                            currentTrack.UID = GetPropertyValue(line);
-                        else if (line.StartsWith("|  + Track type:"))
-                            currentTrack.Type = Enum.Parse<TrackType>(GetPropertyValue(line), ignoreCase: true);
-                        else if (line.StartsWith("|  + Language:"))
-                            currentTrack.Language = GetPropertyValue(line);
-                    }
-
-                    if (currentTrack != null)
-                        _tracksList.Add(currentTrack);
+                    return;
                 }
+
+                string line;
+                Track currentTrack = null;
+                // TODO: remove string parsing and do it with a deserializer
+                while ((line = mkvInfoProcess.StandardOutput.ReadLine()) != null)
+                {
+                    if (line == "| + Track")
+                    {
+                        if (currentTrack != null)
+                            _tracksList.Add(currentTrack);
+
+                        currentTrack = new Track();
+                    }
+                    else if (line.StartsWith("|  + Track number:"))
+                        currentTrack.TrackNumber = Int32.Parse(GetPropertyValue(line));
+                    else if (line.StartsWith("|  + Track UID:"))
+                        currentTrack.UID = GetPropertyValue(line);
+                    else if (line.StartsWith("|  + Track type:"))
+                        currentTrack.Type = Enum.Parse<TrackType>(GetPropertyValue(line), ignoreCase: true);
+                    else if (line.StartsWith("|  + Language:"))
+                        currentTrack.Language = GetPropertyValue(line);
+                }
+
+                if (currentTrack != null)
+                    _tracksList.Add(currentTrack);
 
                 _tracksLoaded = true;
             }
@@ -91,15 +89,17 @@ namespace MkvTracksSwapper
                 return;
             }
 
+            var wantedAudioTrackNb = -1;
+            var wantedsubTrackNb = -1;
             if (audioTrack != null)
-                SwapTrackNumberForType(TrackType.Audio, audioTrack);
+                wantedAudioTrackNb = SwapTrackNumberForType(TrackType.Audio, audioTrack);
             if (subtitlesTrack != null)
-                SwapTrackNumberForType(TrackType.Subtitles, subtitlesTrack);
+                wantedsubTrackNb = SwapTrackNumberForType(TrackType.Subtitles, subtitlesTrack);
 
             ProcessStartInfo processStartInfo = BuildProcessStartInfo("mkvmerge");
 
-            // comand line:
-            // mkvmerge --output outputFileName fileName --track-order 0:0,0:1,0:2,0:3,0:4,0:5,0:6...
+            // command line:
+            // mkvmerge --output outputFileName fileName --track-order 0:0,0:3,0:2,0:1,0:6,0:5,0:4...
 
             var argsBuilder = new StringBuilder();
 
@@ -110,30 +110,33 @@ namespace MkvTracksSwapper
             var trackArgs = new List<string>();
             foreach (var track in _tracksList)
                 trackArgs.Add($"0:{track.TrackNumber - 1}"); // mkvmerge use index starting at 0, mkvinfo at 1 hence the - 1
-            argsBuilder.Append($"{String.Join(',', trackArgs)}"); // build the value for parameter track-order: 0:0,0:1,0:2...
+            argsBuilder.Append($"{String.Join(',', trackArgs)}"); // build the value for parameter track-order: 0:0,0:3,0:2,0:1...
+
+            if (wantedAudioTrackNb != -1)
+                argsBuilder.Append($" --default-track {wantedAudioTrackNb} ");
+            if (wantedsubTrackNb != -1)
+                argsBuilder.Append($" --default-track {wantedsubTrackNb} ");
 
             processStartInfo.Arguments = argsBuilder.ToString();
 
             try
             {
-                using (Process mkvPropEditProcess = Process.Start(processStartInfo))
+                using Process mkvPropEditProcess = Process.Start(processStartInfo);
+                mkvPropEditProcess.WaitForExit();
+
+                if (mkvPropEditProcess.ExitCode != 0)
                 {
-                    mkvPropEditProcess.WaitForExit();
+                    _logger.LogError(mkvPropEditProcess.StandardOutput.ReadToEnd());
 
-                    if (mkvPropEditProcess.ExitCode != 0)
-                    {
-                        _logger.LogError(mkvPropEditProcess.StandardOutput.ReadToEnd());
+                    return;
+                }
 
-                        return;
-                    }
+                _logger.LogInformation($"Successfully swapped tracks for file {_fileInfo.FullName}");
 
-                    _logger.LogInformation($"Successfully swapped tracks for file {_fileInfo.FullName}");
-
-                    if (overrideFile)
-                    {
-                        File.Delete(_fileInfo.FullName);
-                        File.Move(outputName, _fileInfo.FullName);
-                    }
+                if (overrideFile)
+                {
+                    File.Delete(_fileInfo.FullName);
+                    File.Move(outputName, _fileInfo.FullName);
                 }
             }
             catch (Exception ex)
@@ -158,18 +161,19 @@ namespace MkvTracksSwapper
             return newFileName;
         }
 
-        private void SwapTrackNumberForType(TrackType type, string language)
+        private int SwapTrackNumberForType(TrackType type, string language)
         {
             var firstTrack = _tracksList.FirstOrDefault(t => t.Type == type);
             var wantedTrack = _tracksList.FirstOrDefault(t => t.Type == type && t.Language.StartsWith(language));
 
             if (firstTrack == null || wantedTrack == null || firstTrack == wantedTrack) // useless if first track is already of wanted language
-                return;
+                return -1;
 
-            int temp;
-            temp = wantedTrack.TrackNumber;
+            var temp = wantedTrack.TrackNumber;
             wantedTrack.TrackNumber = firstTrack.TrackNumber;
             firstTrack.TrackNumber = temp;
+
+            return wantedTrack.TrackNumber;
         }
 
         private string GetPropertyValue(string line)

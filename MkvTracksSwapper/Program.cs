@@ -68,16 +68,16 @@ namespace MkvTracksSwapper
             var indexOfAudioArg = Array.IndexOf(args, "-a");
             var indexOfSubtitlesArg = Array.IndexOf(args, "-s");
 
-            return (args?[indexOfAudioArg + 1], args?[indexOfSubtitlesArg + 1]);
+            return (indexOfAudioArg != -1 ? args[indexOfAudioArg + 1] : null,
+                    indexOfSubtitlesArg != -1 ? args[indexOfSubtitlesArg + 1] : null);
         }
 
         static List<string> GetMkvFileNames(string[] args)
         {
-            var filesNames = new List<string>();
-            filesNames = args.Where(arg => File.Exists(arg) && Path.HasExtension("mkv")).ToList();
+            var filesNames = args.Where(arg => File.Exists(arg) && Path.GetExtension(arg) == ".mkv").ToList();
 
-            foreach (var directory in args.Where(arg => Directory.Exists(arg)))
-                filesNames.AddRange(Directory.GetFiles(directory, "*.mkv", new EnumerationOptions() { RecurseSubdirectories = true }));
+            foreach (var directory in args.Where(Directory.Exists))
+                filesNames.AddRange(Directory.GetFiles(directory, "*.mkv", new EnumerationOptions { RecurseSubdirectories = true }));
 
             return filesNames;
         }
