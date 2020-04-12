@@ -17,10 +17,16 @@
         public bool Equals(Track other)
         {
             if (ReferenceEquals(other, null))
+            {
                 return false;
+            }
+
             if (ReferenceEquals(other, this))
+            {
                 return true;
-            return this.UID == other.UID;
+            }
+
+            return UID == other.UID;
         }
 
         public override bool Equals(object obj)
@@ -40,7 +46,7 @@
 
         public override int GetHashCode()
         {
-            if (int.TryParse(this.UID, out int hashCode))
+            if (int.TryParse(UID, out int hashCode))
                 return hashCode;
             return 0;
         }

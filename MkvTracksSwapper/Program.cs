@@ -4,12 +4,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
+using MkvTracksSwapper.Logging;
 
 namespace MkvTracksSwapper
 {
-    class Program
+    internal class Program
     {
-        static void Main(string[] args)
+        private static async Task Main(string[] args)
         {
             var serviceProvider = ConfigureDI(args.Contains("-v"));
 
@@ -24,9 +26,13 @@ namespace MkvTracksSwapper
 
             var logMessage = "Modifying following files, setting";
             if (audio != null)
+            {
                 logMessage += $" {audio} as first audio track";
+            }
             if (subtitles != null)
+            {
                 logMessage += $" {subtitles} as first subtitles track";
+            }
             logger.LogInformation(logMessage);
 
             var files = new List<FileInfo>();
@@ -40,17 +46,40 @@ namespace MkvTracksSwapper
             logger.LogInformation($"------------------------------------------{ Environment.NewLine}");
 
             if (files.Count == 0)
+            {
                 logger.LogError("No valid file found.");
+            }
 
+            var swapper = new TracksProcessor(audio, subtitles, args.Contains("-f"));
+
+            var taskList = new List<Task>(files.Count);
             foreach (var file in files)
             {
-                var trackSwitcher = new TracksSwapper(file, logger);
-                trackSwitcher.ReadTracks();
-                trackSwitcher.SwapTracks(audio, subtitles, args.Contains("-f"));
+                var fileReader = new FileReader(file);
+                var task = Task.Run(async () =>
+                {
+                    await fileReader
+                    .ProcessFile()
+                    .ContinueWith(async readTask =>
+                    {
+                        if (readTask.IsCompletedSuccessfully && readTask.Result != null)
+                        {
+                            Console.WriteLine("AFTER READ RESULT OK");
+
+                            var success= await swapper.PutTracksFirst(readTask.Result);
+                            Console.WriteLine("SWAPPING SUCCESS: " + success);
+                        }
+                    });
+                });
+
+                taskList.Add(task);
+                break;
             }
+
+            await Task.WhenAll(taskList);
         }
 
-        static ServiceProvider ConfigureDI(bool verbose)
+        private static ServiceProvider ConfigureDI(bool verbose)
         {
             var serviceProvider = new ServiceCollection()
                         .AddTransient<ILogger, ParametrableLogger>()
@@ -63,7 +92,7 @@ namespace MkvTracksSwapper
             return serviceProvider;
         }
 
-        static (string audioLanguage, string subtitlesLanguage) GetWantedLanguages(string[] args)
+        private static (string audioLanguage, string subtitlesLanguage) GetWantedLanguages(string[] args)
         {
             var indexOfAudioArg = Array.IndexOf(args, "-a");
             var indexOfSubtitlesArg = Array.IndexOf(args, "-s");
@@ -72,7 +101,7 @@ namespace MkvTracksSwapper
                     indexOfSubtitlesArg != -1 ? args[indexOfSubtitlesArg + 1] : null);
         }
 
-        static List<string> GetMkvFileNames(string[] args)
+        private static List<string> GetMkvFileNames(string[] args)
         {
             var filesNames = args.Where(arg => File.Exists(arg) && Path.GetExtension(arg) == ".mkv").ToList();
 
