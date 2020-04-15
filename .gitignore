@@ -3,3 +3,4 @@
 **/obj
 **/Properties/launchSettings.json
 **/*.csproj.user
+**/Properties/PublishProfiles/*
