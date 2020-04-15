@@ -2,9 +2,10 @@
 {
     public enum TrackType
     {
+        Unknown,
         Video,
         Audio,
-        Subtitles
+        Subtitles,
     }
 
     public class Track
@@ -13,6 +14,7 @@
         public string UID { get; set; } = string.Empty;
         public string Language { get; set; } = "eng";
         public TrackType Type { get; set; }
+        public bool IsDefault { get; set; }
 
         public bool Equals(Track other)
         {

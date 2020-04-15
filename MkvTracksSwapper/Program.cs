@@ -1,11 +1,13 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
-using MkvTracksSwapper.Logging;
+using NLog;
+using NLog.Config;
+using NLog.Layouts;
+using NLog.Targets;
 
 namespace MkvTracksSwapper
 {
@@ -13,27 +15,27 @@ namespace MkvTracksSwapper
     {
         private static async Task Main(string[] args)
         {
-            var serviceProvider = ConfigureDI(args.Contains("-v"));
+            ConfigureNlog(args.Contains("-v"));
 
-            var logger = serviceProvider.GetRequiredService<ILoggerProvider>().CreateLogger("MkvTracksSwapper");
+            var logger = LogManager.GetCurrentClassLogger();
 
             var (audio, subtitles) = GetWantedLanguages(args);
             if (audio == null && subtitles == null)
             {
-                logger.LogInformation("No language specified, nothing to do.");
+                logger.Warn("No language specified, nothing to do.");
                 return;
             }
 
-            var logMessage = "Modifying following files, setting";
+            var logMessage = "Modifying following files, setting:";
             if (audio != null)
             {
-                logMessage += $" {audio} as first audio track";
+                logMessage += $"{Environment.NewLine} - {audio} as default and first audio track";
             }
             if (subtitles != null)
             {
-                logMessage += $" {subtitles} as first subtitles track";
+                logMessage += $"{Environment.NewLine} - {subtitles} as default and first subtitles track";
             }
-            logger.LogInformation(logMessage);
+            logger.Info(logMessage);
 
             var files = new List<FileInfo>();
             var filesNames = GetMkvFileNames(args);
@@ -41,55 +43,72 @@ namespace MkvTracksSwapper
             {
                 var fileInfo = new FileInfo(fileName);
                 files.Add(fileInfo);
-                logger.LogInformation(fileInfo.FullName);
+                logger.Info(fileInfo.FullName);
             }
-            logger.LogInformation($"------------------------------------------{ Environment.NewLine}");
+            logger.Info($"------------------------------------------{ Environment.NewLine}");
 
             if (files.Count == 0)
             {
-                logger.LogError("No valid file found.");
+                logger.Warn("No valid file found, nothing to do.");
             }
 
-            var swapper = new TracksProcessor(audio, subtitles, args.Contains("-f"));
-
             var taskList = new List<Task>(files.Count);
+            using var cts = new CancellationTokenSource();
             foreach (var file in files)
             {
                 var fileReader = new FileReader(file);
                 var task = Task.Run(async () =>
                 {
-                    await fileReader
-                    .ProcessFile()
-                    .ContinueWith(async readTask =>
+                    var mkvHandle = await fileReader.ProcessFile(cts.Token);
+                    if (mkvHandle == null)
                     {
-                        if (readTask.IsCompletedSuccessfully && readTask.Result != null)
-                        {
-                            Console.WriteLine("AFTER READ RESULT OK");
+                        return false;
+                    }
 
-                            var success= await swapper.PutTracksFirst(readTask.Result);
-                            Console.WriteLine("SWAPPING SUCCESS: " + success);
-                        }
-                    });
-                });
+                    var swapper = new TracksProcessor(mkvHandle, audio, subtitles, args.Contains("-f"));
+                    var successful = await swapper.PutTracksFirst(cts.Token);
+                    if (successful)
+                    {
+                        logger.Info($"Swapped tracks for file {file.FullName}");
+                    }
+                    else
+                    {
+                        logger.Warn($"Tracks not swapped for file {file.FullName}");
+                    }
+
+                    return successful;
+                }, cts.Token);
 
                 taskList.Add(task);
-                break;
             }
 
             await Task.WhenAll(taskList);
+            logger.Info("All file processed");
         }
 
-        private static ServiceProvider ConfigureDI(bool verbose)
+        private static void ConfigureNlog(bool verbose)
         {
-            var serviceProvider = new ServiceCollection()
-                        .AddTransient<ILogger, ParametrableLogger>()
-                        .AddLogging(loggingBuilder =>
-                        {
-                            loggingBuilder.AddProvider(new ParametrableLoggerProvider(verbose ? LogLevel.Information : LogLevel.Error));
-                        })
-                        .BuildServiceProvider();
+            var consoleTarget = new ColoredConsoleTarget("ConsoleLogging")
+            {
+                Layout = Layout.FromString("${message}")
+            };
 
-            return serviceProvider;
+            var fileTarget = new FileTarget("FileLogging")
+            {
+                ArchiveEvery = FileArchivePeriod.Day,
+                ArchiveFileKind = FilePathKind.Relative,
+                ConcurrentWrites = true,
+                FileName = Layout.FromString("nlog-log.txt"),
+                KeepFileOpen = true,
+                Layout = Layout.FromString("${longdate}|${threadid}|${level:uppercase=true}|${logger}|${message}")
+            };
+
+            LogManager.Configuration = new LoggingConfiguration();
+            LogManager.Configuration.AddTarget(consoleTarget);
+            LogManager.Configuration.AddTarget(fileTarget);
+            LogManager.Configuration.AddRule(verbose ? LogLevel.Trace : LogLevel.Info, LogLevel.Fatal, consoleTarget);
+            LogManager.Configuration.AddRule(LogLevel.Trace, LogLevel.Fatal, fileTarget);
+            LogManager.ReconfigExistingLoggers();
         }
 
         private static (string audioLanguage, string subtitlesLanguage) GetWantedLanguages(string[] args)
@@ -106,7 +125,9 @@ namespace MkvTracksSwapper
             var filesNames = args.Where(arg => File.Exists(arg) && Path.GetExtension(arg) == ".mkv").ToList();
 
             foreach (var directory in args.Where(Directory.Exists))
+            {
                 filesNames.AddRange(Directory.GetFiles(directory, "*.mkv", new EnumerationOptions { RecurseSubdirectories = true }));
+            }
 
             return filesNames;
         }

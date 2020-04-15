@@ -2,12 +2,16 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
+using NLog;
 
 namespace MkvTracksSwapper
 {
     public class FileReader
     {
+        private readonly Logger logger = LogManager.GetCurrentClassLogger();
+
         private readonly FileInfo fileInfo;
         private readonly List<Track> tracks;
         private Track current;
@@ -19,46 +23,32 @@ namespace MkvTracksSwapper
             current = null;
         }
 
-        public async Task<MkvFileHandle> ProcessFile()
+        public async Task<MkvFileHandle> ProcessFile(CancellationToken ct = default)
         {
-            var mkvInfoRunner = new ProcessRunner("mkvinfo", true, HandleMkvInfoOutput);
-            try
+            using var mkvInfoRunner = new ProcessRunner("mkvinfo", TimeSpan.FromSeconds(15), HandleMkvInfoOutput);
+
+            var successful = await mkvInfoRunner.RunWithArg($"\"{fileInfo.FullName}\"", ct);
+
+            if (!successful)
             {
-                Console.WriteLine("Starting reading of file: " + fileInfo.FullName);
-
-                var successful = await mkvInfoRunner.RunWithArg($"\"{fileInfo.FullName}\"");
-
-                if (!successful)
-                {
-                    Console.WriteLine($"Error occured while running mkvinfo: {mkvInfoRunner.Error}");
-                    return null;
-                }
-
-                if (current != null)
-                {
-                    tracks.Add(current);
-                }
-
-                return new MkvFileHandle(fileInfo, tracks);
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Error occured while running mkvinfo: {e.Message}");
+                logger.Fatal($"mkvinfo exited with non zero code: {mkvInfoRunner.Error}");
                 return null;
             }
-            finally
-            {
-                mkvInfoRunner.Dispose();
-            }
+
+            return new MkvFileHandle(fileInfo, tracks);
         }
 
         private void HandleMkvInfoOutput(object sender, DataReceivedEventArgs e)
         {
             string line = e.Data;
 
-            if (line == null)
+            if (line == null) // received EOF on stream, need to add last track processed to the tracks list
             {
-                Console.WriteLine("END OF OUTPUT");
+                if (current != null)
+                {
+                    tracks.Add(current);
+                }
+
                 return;
             }
 
@@ -74,7 +64,7 @@ namespace MkvTracksSwapper
             }
             else if (line.StartsWith("|  + Track number:"))
             {
-                current.TrackNumber = int.Parse(GetPropertyValue(line));
+                current.TrackNumber = int.TryParse(GetPropertyValue(line), out int trackNumber) ? trackNumber : int.MinValue;
             }
             else if (line.StartsWith("|  + Track UID:"))
             {
@@ -82,17 +72,29 @@ namespace MkvTracksSwapper
             }
             else if (line.StartsWith("|  + Track type:"))
             {
-                current.Type = Enum.Parse<TrackType>(GetPropertyValue(line), true);
+                current.Type = Enum.TryParse(GetPropertyValue(line), true, out TrackType trackType) ? trackType : TrackType.Unknown;
             }
             else if (line.StartsWith("|  + Language:"))
             {
                 current.Language = GetPropertyValue(line);
             }
+            else if (line.StartsWith("|  + Default track flag:"))
+            {
+                current.IsDefault = GetPropertyValue(line) == "1";
+            }
         }
 
         private string GetPropertyValue(string line)
         {
-            return line.Split(':')[1].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+            try
+            {
+                return line.Split(':')[1].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+            }
+            catch (Exception e)
+            {
+                logger.Fatal(e);
+                return string.Empty;
+            }
         }
     }
 }

@@ -1,18 +1,23 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using NLog;
 
 namespace MkvTracksSwapper
 {
     public class TracksProcessor
     {
+        private readonly Logger logger = LogManager.GetCurrentClassLogger();
+
+        private readonly MkvFileHandle handle;
         private readonly Settings settings;
 
-        public TracksProcessor(string audio, string subtitles, bool overrideFile = false)
+        public TracksProcessor(MkvFileHandle mkvHandle, string audio, string subtitles, bool overrideFile = false)
         {
+            handle = mkvHandle;
             settings = new Settings
             {
                 AudioLanguage = audio,
@@ -21,95 +26,113 @@ namespace MkvTracksSwapper
             };
         }
 
-        public async Task<bool> PutTracksFirst(MkvFileHandle handle)
+        public async Task<bool> PutTracksFirst(CancellationToken ct = default)
         {
-            if (!TracksAreLoaded(handle))
+            if (!TracksAreLoaded())
             {
                 return false;
             }
 
-            var mkvMergeRunner = new ProcessRunner("mkvmerge", false);
-
+            string argLine;
             try
             {
-                var argLine = BuildMkvMergeArgumentLine(handle);
-                Console.WriteLine("ARG LINE: " + argLine);
-                var successful = await mkvMergeRunner.RunWithArg(argLine);
-
-                if (successful)
-                {
-                    if (settings.OverrideFile)
-                    {
-                        await Task.Run(() =>
-                        {
-                            File.Delete(handle.FileInfo.FullName);
-                            File.Move(settings.OutputPath, handle.FileInfo.FullName);
-                        });
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("mkvmerge failed: " + mkvMergeRunner.Error);
-                }
-
-                return successful;
+                argLine = BuildMkvMergeArgumentLine();
+                logger.Trace($"Argument line for mkvmerge for file {handle.FileInfo.FullName}: {argLine}");
             }
             catch (Exception e)
             {
-                Console.WriteLine($"Error occured while running mkvmerge: {e.Message}");
+                logger.Fatal(e);
                 return false;
             }
-            finally
+
+            using var mkvMergeRunner = new ProcessRunner("mkvmerge");
+            var successful = await mkvMergeRunner.RunWithArg(argLine, ct);
+
+            if (successful)
             {
-                mkvMergeRunner.Dispose();
+                if (settings.OverrideFile)
+                {
+                    await MoveFile();
+                }
             }
+            else
+            {
+                logger.Fatal($"mkvmerge exited with non zero code: {mkvMergeRunner.Error}");
+            }
+
+            return successful;
         }
 
-        private string BuildMkvMergeArgumentLine(MkvFileHandle handle)
+        private string BuildMkvMergeArgumentLine()
         {
-            int? wantedAudioTrackNb = null;
-            int? wantedSubTrackNb = null;
+            // command line:
+            // mkvmerge --output outputFileName [--default-track 3:yes] [--default-track 4:yes] --track-order 0:0,0:3,0:2,0:1,0:6,0:5,0:4... fileName
+
+            var args = new StringBuilder();
+
+            settings.OutputPath = settings.OverrideFile ? GetTempFile() ?? CreateOutputFileName() : CreateOutputFileName();
+            args.Append($" --output \"{settings.OutputPath}\"");
+
             if (settings.AudioLanguage != null)
             {
-                wantedAudioTrackNb = SwapTrackNumberForType(TrackType.Audio, settings.AudioLanguage, handle);
+                MarkTrackOfTypeAsDefault(TrackType.Audio,settings.AudioLanguage, args);
             }
 
             if (settings.SubtitlesLanguage != null)
             {
-                wantedSubTrackNb = SwapTrackNumberForType(TrackType.Subtitles, settings.SubtitlesLanguage, handle);
+                MarkTrackOfTypeAsDefault(TrackType.Subtitles, settings.SubtitlesLanguage, args);
             }
 
-            // command line:
-            // mkvmerge --output outputFileName fileName --track-order 0:0,0:3,0:2,0:1,0:6,0:5,0:4...
+            args.Append(" --track-order ");
+            var orderedTracks = handle.Tracks.OrderBy(t => t.Type).ThenByDescending(t => t.IsDefault);
+            var trackArgs = orderedTracks.Select(t => $"0:{t.TrackNumber - 1}"); // mkvmerge use index starting at 0, mkvinfo at 1, so -1
+            args.Append($"{string.Join(',', trackArgs)}");
 
-            var argsBuilder = new StringBuilder();
+            args.Append($" \"{handle.FileInfo.FullName}\"");
 
-            settings.OutputPath = settings.OverrideFile ? Path.GetTempFileName() : CreateOutputFileName(handle);
-            argsBuilder.Append($" --output \"{settings.OutputPath}\" \"{handle.FileInfo.FullName}\"");
-
-            argsBuilder.Append(" --track-order ");
-            var trackArgs = new List<string>();
-            foreach (var track in handle.Tracks)
-            {
-                trackArgs.Add($"0:{track.TrackNumber - 1}"); // mkvmerge use index starting at 0, mkvinfo at 1 hence the - 1
-            }
-
-            argsBuilder.Append($"{string.Join(',', trackArgs)}"); // build the value for parameter track-order: 0:0,0:3,0:2,0:1...
-
-            if (wantedAudioTrackNb.HasValue)
-            {
-                argsBuilder.Append($" --default-track {wantedAudioTrackNb.Value - 1}:1 ");
-            }
-
-            if (wantedSubTrackNb.HasValue)
-            {
-                argsBuilder.Append($" --default-track {wantedSubTrackNb.Value - 1}:1 ");
-            }
-
-            return argsBuilder.ToString();
+            return args.ToString();
         }
 
-        private string CreateOutputFileName(MkvFileHandle handle)
+        private void MarkTrackOfTypeAsDefault(TrackType trackType, string language, StringBuilder argsBuilder)
+        {
+            var tracksSubset = handle.Tracks.Where(t => t.Type == trackType).ToList();
+            var trackThatShouldBeFirst = tracksSubset.FirstOrDefault(t => t.Language == language);
+
+            if (trackThatShouldBeFirst != null)
+            {
+                trackThatShouldBeFirst.IsDefault = true;
+                foreach (var tracks in tracksSubset.Where(t => t != trackThatShouldBeFirst))
+                {
+                    tracks.IsDefault = false;
+                }
+
+                argsBuilder.Append($" --default-track {trackThatShouldBeFirst.TrackNumber - 1}:yes "); // mkvmerge use index starting at 0, mkvinfo at 1, so -1
+            }
+        }
+
+        private string GetTempFile()
+        {
+            var tmpFolderPath = Path.GetTempPath();
+            try
+            {
+                var tempFile = Path.Combine(tmpFolderPath, Path.GetRandomFileName());
+
+                while (File.Exists(tempFile))
+                {
+                    tempFile = Path.Combine(tmpFolderPath, Path.GetRandomFileName());
+                }
+
+                return tempFile;
+            }
+            catch (Exception e)
+            {
+                logger.Trace($"Error creating tmp file: {e.Message}");
+            }
+
+            return null;
+        }
+
+        private string CreateOutputFileName()
         {
             var fullPathWithoutExtension = Path.ChangeExtension(handle.FileInfo.FullName, null);
 
@@ -125,11 +148,10 @@ namespace MkvTracksSwapper
             return newFileName;
         }
 
-        private bool TracksAreLoaded(MkvFileHandle handle)
+        private bool TracksAreLoaded()
         {
             if (handle.Tracks.Count == 0)
             {
-                Console.WriteLine("NO TRACKS");
                 //_logger.LogError($"No track have been found, nothing to do for file {handle.FullName}");
                 return false;
             }
@@ -137,21 +159,19 @@ namespace MkvTracksSwapper
             return true;
         }
 
-        private int? SwapTrackNumberForType(TrackType type, string language, MkvFileHandle handle)
+        private async Task MoveFile()
         {
-            var firstTrack = handle.Tracks.FirstOrDefault(t => t.Type == type);
-            var wantedTrack = handle.Tracks.FirstOrDefault(t => t.Type == type && t.Language.StartsWith(language));
-
-            if (firstTrack == null || wantedTrack == null || firstTrack == wantedTrack) // useless if first track is already of wanted language
+            await Task.Run(() =>
             {
-                return null;
-            }
-
-            var temp = wantedTrack.TrackNumber;
-            wantedTrack.TrackNumber = firstTrack.TrackNumber;
-            firstTrack.TrackNumber = temp;
-
-            return firstTrack.TrackNumber;
+                try
+                {
+                    File.Move(settings.OutputPath, handle.FileInfo.FullName, true);
+                }
+                catch (Exception e)
+                {
+                    logger.Fatal(e);
+                }
+            });
         }
 
         private class Settings
