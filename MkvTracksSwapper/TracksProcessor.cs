@@ -15,14 +15,14 @@ namespace MkvTracksSwapper
         private readonly MkvFileHandle handle;
         private readonly Settings settings;
 
-        public TracksProcessor(MkvFileHandle mkvHandle, string audio, string subtitles, bool overrideFile = false)
+        public TracksProcessor(MkvFileHandle mkvHandle, string audio, string subtitles, bool overwriteFile = false)
         {
             handle = mkvHandle;
             settings = new Settings
             {
                 AudioLanguage = audio,
                 SubtitlesLanguage = subtitles,
-                OverrideFile = overrideFile
+                OverwriteFile = overwriteFile
             };
         }
 
@@ -50,7 +50,7 @@ namespace MkvTracksSwapper
 
             if (successful)
             {
-                if (settings.OverrideFile)
+                if (settings.OverwriteFile)
                 {
                     await MoveFile();
                 }
@@ -70,7 +70,7 @@ namespace MkvTracksSwapper
 
             var args = new StringBuilder();
 
-            settings.OutputPath = settings.OverrideFile ? GetTempFile() ?? CreateOutputFileName() : CreateOutputFileName();
+            settings.OutputPath = settings.OverwriteFile ? GetTempFile() ?? CreateOutputFileName() : CreateOutputFileName();
             args.Append($" --output \"{settings.OutputPath}\"");
 
             if (settings.AudioLanguage != null)
@@ -152,7 +152,7 @@ namespace MkvTracksSwapper
         {
             if (handle.Tracks.Count == 0)
             {
-                //_logger.LogError($"No track have been found, nothing to do for file {handle.FullName}");
+                logger.Warn("No track have been found, nothing to do");
                 return false;
             }
 
@@ -165,6 +165,7 @@ namespace MkvTracksSwapper
             {
                 try
                 {
+                    logger.Trace($"Moving temporary file {settings.OutputPath}, overwritting destination file");
                     File.Move(settings.OutputPath, handle.FileInfo.FullName, true);
                 }
                 catch (Exception e)
@@ -178,7 +179,7 @@ namespace MkvTracksSwapper
         {
             public string AudioLanguage { get; set; }
             public string SubtitlesLanguage { get; set; }
-            public bool OverrideFile { get; set; }
+            public bool OverwriteFile { get; set; }
             public string OutputPath { get; set; }
         }
     }

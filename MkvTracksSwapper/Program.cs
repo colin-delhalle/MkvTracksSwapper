@@ -19,6 +19,7 @@ namespace MkvTracksSwapper
 
             var logger = LogManager.GetCurrentClassLogger();
 
+            var overwriteFile = args.Contains("-f");
             var (audio, subtitles) = GetWantedLanguages(args);
             if (audio == null && subtitles == null)
             {
@@ -37,6 +38,11 @@ namespace MkvTracksSwapper
             }
             logger.Info(logMessage);
 
+            if (overwriteFile)
+            {
+                logger.Info("Files will be overwritten");
+            }
+
             var files = new List<FileInfo>();
             var filesNames = GetMkvFileNames(args);
             foreach (var fileName in filesNames)
@@ -45,7 +51,7 @@ namespace MkvTracksSwapper
                 files.Add(fileInfo);
                 logger.Info(fileInfo.FullName);
             }
-            logger.Info($"------------------------------------------{ Environment.NewLine}");
+            logger.Info($"------------------------------------------{Environment.NewLine}");
 
             if (files.Count == 0)
             {
@@ -65,7 +71,7 @@ namespace MkvTracksSwapper
                         return false;
                     }
 
-                    var swapper = new TracksProcessor(mkvHandle, audio, subtitles, args.Contains("-f"));
+                    var swapper = new TracksProcessor(mkvHandle, audio, subtitles, overwriteFile);
                     var successful = await swapper.PutTracksFirst(cts.Token);
                     if (successful)
                     {

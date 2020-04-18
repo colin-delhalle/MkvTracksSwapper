@@ -47,7 +47,6 @@ namespace MkvTracksSwapper
             }
 
             logger.Trace($"Creating process {processName}{(useEmbeddedProgram ? $" using executable {path}" : string.Empty)}");
-
             process = new Process
             {
                 StartInfo = BuildProcessStartInfo(path),
